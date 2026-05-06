@@ -3,6 +3,16 @@
 return [
     'app_name' => 'Fix These Sentences Streak App',
     'tagline' => 'Repair the sentence. Protect the streak.',
+    'challenge_provider' => getenv('FTSS_CHALLENGE_PROVIDER') ?: 'openai',
+    'grading_provider' => getenv('FTSS_GRADING_PROVIDER') ?: 'openai',
+    'openai' => [
+        'api_key_env' => getenv('FTSS_OPENAI_API_KEY_ENV') ?: 'OPENAI_API_KEY',
+        'model' => getenv('FTSS_OPENAI_MODEL') ?: 'gpt-4o-mini',
+        'base_url' => rtrim(getenv('FTSS_OPENAI_BASE_URL') ?: 'https://api.openai.com/v1', '/'),
+        'timeout_seconds' => (int) (getenv('FTSS_OPENAI_TIMEOUT') ?: 20),
+        'generation_temperature' => (float) (getenv('FTSS_OPENAI_GENERATION_TEMPERATURE') ?: 0.9),
+        'grading_temperature' => (float) (getenv('FTSS_OPENAI_GRADING_TEMPERATURE') ?: 0),
+    ],
     'sentences' => [
         [
             'id' => 1,
