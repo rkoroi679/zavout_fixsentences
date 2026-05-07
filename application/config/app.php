@@ -3,8 +3,17 @@
 return [
     'app_name' => 'Fix These Sentences Streak App',
     'tagline' => 'Repair the sentence. Protect the streak.',
-    'challenge_provider' => getenv('FTSS_CHALLENGE_PROVIDER') ?: 'openai',
-    'grading_provider' => getenv('FTSS_GRADING_PROVIDER') ?: 'openai',
+    'challenge_provider' => getenv('FTSS_CHALLENGE_PROVIDER') ?: 'database',
+    'grading_provider' => getenv('FTSS_GRADING_PROVIDER') ?: 'database',
+    'database' => [
+        'host' => getenv('FTSS_DB_HOST') ?: '127.0.0.1',
+        'port' => (int) (getenv('FTSS_DB_PORT') ?: 3306),
+        'name' => getenv('FTSS_DB_NAME') ?: '',
+        'user' => getenv('FTSS_DB_USER') ?: '',
+        'pass' => getenv('FTSS_DB_PASS') ?: '',
+        'charset' => getenv('FTSS_DB_CHARSET') ?: 'utf8mb4',
+        'connect_timeout_seconds' => (int) (getenv('FTSS_DB_CONNECT_TIMEOUT') ?: 3),
+    ],
     'openai' => [
         'api_key_env' => getenv('FTSS_OPENAI_API_KEY_ENV') ?: 'OPENAI_API_KEY',
         'model' => getenv('FTSS_OPENAI_MODEL') ?: 'gpt-4o-mini',

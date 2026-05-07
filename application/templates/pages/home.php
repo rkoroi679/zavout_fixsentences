@@ -1,6 +1,8 @@
 <?php
 $last_result = $view_model['last_result'];
 $sentence = $view_model['sentence'];
+// var_dump($sentence); // Debugging line to check the sentence data
+// exit;
 ?>
 <section class="hero">
     <div class="hero-copy">

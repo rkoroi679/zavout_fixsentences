@@ -1,6 +1,7 @@
 <?php
 
 require_once __DIR__ . '/../bootstrap/env.php';
+require_once __DIR__ . '/database.php';
 require_once __DIR__ . '/openai.php';
 
 function ftss_read_app_config()
@@ -24,6 +25,8 @@ function ftss_read_env($name, $default = '')
 function ftss_read_sentences()
 {
     $config = ftss_read_app_config();
+    var_dump($config); // Debugging line to check the loaded configuration
+    exit;
 
     return isset($config['sentences']) && is_array($config['sentences']) ? $config['sentences'] : [];
 }
@@ -47,6 +50,51 @@ function ftss_normalize_sentence($sentence)
     return mb_strtolower($sentence);
 }
 
+function ftss_normalize_database_answer($sentence)
+{
+    $sentence = ftss_normalize_sentence($sentence);
+    $sentence = preg_replace('/[.!?,;:]+$/u', '', $sentence);
+
+    return trim((string) $sentence);
+}
+
+function ftss_prepare_accepted_answers($accepted_answers, $fallback_correct = '')
+{
+    $answers = [];
+
+    if (is_array($accepted_answers)) {
+        foreach ($accepted_answers as $answer) {
+            $prepared_answer = trim((string) $answer);
+
+            if ($prepared_answer !== '') {
+                $answers[] = $prepared_answer;
+            }
+        }
+    }
+
+    $fallback_correct = trim((string) $fallback_correct);
+
+    if ($fallback_correct !== '') {
+        array_unshift($answers, $fallback_correct);
+    }
+
+    $normalized_answers = [];
+    $seen = [];
+
+    foreach ($answers as $answer) {
+        $normalized = ftss_normalize_database_answer($answer);
+
+        if ($normalized === '' || isset($seen[$normalized])) {
+            continue;
+        }
+
+        $seen[$normalized] = true;
+        $normalized_answers[] = $answer;
+    }
+
+    return $normalized_answers;
+}
+
 function ftss_prepare_challenge($challenge)
 {
     if (!is_array($challenge)) {
@@ -61,13 +109,31 @@ function ftss_prepare_challenge($challenge)
         return null;
     }
 
-    return [
+    $prepared = [
         'id' => isset($challenge['id']) ? (string) $challenge['id'] : uniqid('challenge_', true),
         'source' => isset($challenge['source']) ? trim((string) $challenge['source']) : 'static',
         'incorrect' => $incorrect,
         'correct' => $correct,
         'hint' => $hint,
+        'accepted_answers' => ftss_prepare_accepted_answers(
+            isset($challenge['accepted_answers']) && is_array($challenge['accepted_answers']) ? $challenge['accepted_answers'] : [],
+            $correct
+        ),
     ];
+
+    if (isset($challenge['template_id']) && $challenge['template_id'] !== '') {
+        $prepared['template_id'] = (int) $challenge['template_id'];
+    }
+
+    if (isset($challenge['slug']) && trim((string) $challenge['slug']) !== '') {
+        $prepared['slug'] = trim((string) $challenge['slug']);
+    }
+
+    if (isset($challenge['grammar_topic']) && trim((string) $challenge['grammar_topic']) !== '') {
+        $prepared['grammar_topic'] = trim((string) $challenge['grammar_topic']);
+    }
+
+    return $prepared;
 }
 
 function ftss_pick_next_sentence_id($exclude_id = null)
@@ -111,6 +177,9 @@ function ftss_build_static_challenge($sentence)
         'incorrect' => isset($sentence['incorrect']) ? $sentence['incorrect'] : '',
         'correct' => isset($sentence['correct']) ? $sentence['correct'] : '',
         'hint' => isset($sentence['hint']) ? $sentence['hint'] : '',
+        'accepted_answers' => [
+            isset($sentence['correct']) ? $sentence['correct'] : '',
+        ],
     ]);
 }
 
@@ -133,31 +202,68 @@ function ftss_generate_static_challenge($exclude_challenge = null)
     return $sentence === null ? null : ftss_build_static_challenge($sentence);
 }
 
-function ftss_should_generate_with_openai()
+function ftss_read_challenge_provider_chain()
 {
-    return ftss_read_provider('challenge_provider') === 'openai' && ftss_openai_is_available();
+    $provider = ftss_read_provider('challenge_provider', 'database');
+
+    if ($provider === 'openai') {
+        return ['openai', 'database', 'static'];
+    }
+
+    if ($provider === 'database') {
+        return ['database', 'static'];
+    }
+
+    return ['static'];
 }
 
-function ftss_should_grade_with_openai()
+function ftss_read_grading_provider_chain()
 {
-    return ftss_read_provider('grading_provider') === 'openai' && ftss_openai_is_available();
+    $provider = ftss_read_provider('grading_provider', 'database');
+
+    if ($provider === 'openai') {
+        return ['openai', 'database', 'static'];
+    }
+
+    if ($provider === 'database') {
+        return ['database', 'static'];
+    }
+
+    return ['static'];
 }
 
-function ftss_generate_next_challenge($previous_challenge = null)
+function ftss_generate_challenge_from_provider($provider, $previous_challenge = null)
 {
-    if (ftss_should_generate_with_openai()) {
+    if ($provider === 'openai') {
         $previous_incorrect = is_array($previous_challenge) && isset($previous_challenge['incorrect'])
             ? (string) $previous_challenge['incorrect']
             : '';
 
-        $challenge = ftss_openai_generate_challenge($previous_incorrect);
+        return ftss_openai_generate_challenge($previous_incorrect);
+    }
+
+    if ($provider === 'database') {
+        return ftss_generate_database_challenge($previous_challenge);
+    }
+
+    if ($provider === 'static') {
+        return ftss_generate_static_challenge($previous_challenge);
+    }
+
+    return null;
+}
+
+function ftss_generate_next_challenge($previous_challenge = null)
+{
+    foreach (ftss_read_challenge_provider_chain() as $provider) {
+        $challenge = ftss_generate_challenge_from_provider($provider, $previous_challenge);
 
         if ($challenge !== null) {
             return $challenge;
         }
     }
 
-    return ftss_generate_static_challenge($previous_challenge);
+    return null;
 }
 
 function ftss_ensure_current_challenge($state)
@@ -223,6 +329,66 @@ function ftss_grade_answer_locally($challenge, $answer)
     ];
 }
 
+function ftss_grade_answer_with_database($challenge, $answer)
+{
+    if (!is_array($challenge) || !isset($challenge['accepted_answers']) || !is_array($challenge['accepted_answers'])) {
+        return null;
+    }
+
+    $normalized_answer = ftss_normalize_database_answer($answer);
+
+    if ($normalized_answer === '') {
+        return [
+            'is_correct' => false,
+            'correct_answer' => $challenge['correct'],
+            'feedback' => 'Submit a corrected sentence to keep the streak going.',
+        ];
+    }
+
+    foreach ($challenge['accepted_answers'] as $accepted_answer) {
+        if ($normalized_answer === ftss_normalize_database_answer($accepted_answer)) {
+            return [
+                'is_correct' => true,
+                'correct_answer' => $challenge['correct'],
+                'feedback' => 'Your correction matches an accepted answer.',
+            ];
+        }
+    }
+
+    return [
+        'is_correct' => false,
+        'correct_answer' => $challenge['correct'],
+        'feedback' => 'Match one of the accepted corrected sentences more closely.',
+    ];
+}
+
+function ftss_grade_answer_from_provider($provider, $challenge, $answer)
+{
+    if ($provider === 'openai' && ftss_openai_is_available()) {
+        $grade = ftss_openai_grade_challenge_answer($challenge, $answer);
+
+        if ($grade !== null) {
+            if ($grade['correct_answer'] === '') {
+                $grade['correct_answer'] = $challenge['correct'];
+            }
+
+            return $grade;
+        }
+
+        return null;
+    }
+
+    if ($provider === 'database') {
+        return ftss_grade_answer_with_database($challenge, $answer);
+    }
+
+    if ($provider === 'static') {
+        return ftss_grade_answer_locally($challenge, $answer);
+    }
+
+    return null;
+}
+
 function ftss_grade_answer($challenge, $answer)
 {
     $answer = (string) $answer;
@@ -235,14 +401,10 @@ function ftss_grade_answer($challenge, $answer)
         ];
     }
 
-    if (ftss_should_grade_with_openai()) {
-        $grade = ftss_openai_grade_challenge_answer($challenge, $answer);
+    foreach (ftss_read_grading_provider_chain() as $provider) {
+        $grade = ftss_grade_answer_from_provider($provider, $challenge, $answer);
 
         if ($grade !== null) {
-            if ($grade['correct_answer'] === '') {
-                $grade['correct_answer'] = $challenge['correct'];
-            }
-
             return $grade;
         }
     }
@@ -311,8 +473,13 @@ function ftss_check_answer($answer)
 function ftss_read_runtime_status()
 {
     return [
-        'challenge_provider' => ftss_read_provider('challenge_provider'),
-        'grading_provider' => ftss_read_provider('grading_provider'),
+        'challenge_provider' => ftss_read_provider('challenge_provider', 'database'),
+        'grading_provider' => ftss_read_provider('grading_provider', 'database'),
         'openai_available' => ftss_openai_is_available(),
+        'database_available' => ftss_database_is_available(),
+        'active_fallback_order' => [
+            'challenge' => ftss_read_challenge_provider_chain(),
+            'grading' => ftss_read_grading_provider_chain(),
+        ],
     ];
 }

@@ -12,4 +12,6 @@ echo json_encode([
     'challenge_provider' => $runtime['challenge_provider'],
     'grading_provider' => $runtime['grading_provider'],
     'openai_available' => $runtime['openai_available'],
+    'database_available' => $runtime['database_available'],
+    'active_fallback_order' => $runtime['active_fallback_order'],
 ]);
